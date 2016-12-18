@@ -60,20 +60,22 @@ mkdir -p /var/run/postgresql && chown -R postgres /var/run/postgresql
 mkdir -p $PGDATA && chown -R postgres $PGDATA
 
 # Restart postgres service.
-systemctl_bin=$(which systemctl | wc -l 2> /dev/null)
-if [ "$systemctl_bin" = "1" ]; then
-  systemctl restart postgresql
-else
-  START_CMD="/usr/lib/postgresql/${postgres_version}/bin/pg_ctl -w \
-    -D $PGDATA \
-    -o \"-c config_file=/etc/postgresql/${postgres_version}/main/postgresql.conf\" \
-    restart"
-  su postgres -c "$START_CMD" >> $PGLOG 2> $PGLOG
-fi
+# Docker needs higher privileges to run Systemd and this is bad.
+# Start the postgresql service manually
+postgresql_restart() {
+  action = $1;
+  START_CMD="/usr/lib/postgresql/${postgres_version}/bin/pg_ctlcluster -w \
+      -D $PGDATA \
+      -o \"-c config_file=/etc/postgresql/${postgres_version}/main/postgresql.conf\" \
+      ${action}"
+    su postgres -c "$START_CMD" >> $PGLOG 2> $PGLOG
+  fi
+}
+
+postgresql_restart(start)
 
 postgresql_fix() {
   # remove SSL=true from the postgresql main config
-  postgres_version="$(psql --version 2>&1 | tail -1 | awk '{print $3}' | sed 's/\./ /g' | awk '{print $1 "." $2}')"
   postgres_conf="$(echo 'SHOW config_file;' | sudo -u postgres psql | grep 'postgres')"
   echo "Having SSL=true in postgres config causes many errors (psycopg2 problem)"
   # patched for docker installation
@@ -83,23 +85,7 @@ postgresql_fix() {
       sed -i -e '/ssl =/ s/= .*/= false/' $postgres_conf
 
       echo "Restarting the postgresql service"
-      # get the return values of which commands to determine the service controller
-      which service  >> /dev/null 2>&1
-      service_bin=$?
-      which systemctl  >> /dev/null 2>&1
-      systemctl_bin=$?
-      if [ "$service_bin" != "1" ]; then
-        service postgresql restart
-        service postgresql status | grep -q '^Running clusters: ..*$'
-        status_exitcode="$?"
-      elif [ "$systemctl_bin" != "1" ]; then
-        systemctl restart postgresql
-        systemctl status postgresql | grep -q "active"
-        status_exitcode="$?"
-      else
-        echo "[+] It seems postgres server is not running or responding, please start/restart it manually!"
-        exit 1
-      fi
+      postgresql_restart(restart)
       ;;
     *)
       # do nothing
